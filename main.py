@@ -44,7 +44,7 @@ def send_messages(messages):
         model=MODEL, messages=prefixed_messages, temperature=0.1, max_tokens=500
     )
 
-    print(f"DEBUG: {response}")
+    # TODO: handle cases or more information
     return response["choices"][0]["message"]["content"]
 
 
@@ -75,7 +75,7 @@ def main():
         question = send_messages(messages)
 
         # TODO: print the question and ask for a response, or an indication that the user is happy
-        response = input(question)
+        response = input(f"{question}:\n")
 
         # TODO: give the model the user's response, ask it if it needs further clarification, otherwise ask another question.
 
