@@ -71,6 +71,10 @@ messages_format = dedent(
     3. Requirement summary 
     A summary of the specific requirement. Should be returned when you understand the specific requirement and you're ready to ask the next one.
     Message Format: "{{ "type": "REQUIREMENT_SUMMARY", "contents": <MESSAGE CONTENTS> }}"
+
+    4. Finished collecting requirements
+    A message to indicate that you are finished collecting requirements.
+    Message Format: "{{ "type": "FINISHED", "contents": <MESSAGE CONTENTS> }}"
     """
 )
 
@@ -113,16 +117,16 @@ def main():
     messages.append(wrap_user_message(initial_prompt))
 
     requirements = []
-    attempt = 0
+    incorrect_format_attempt = 0
 
     while not phase_1_complete:
-        if attempt > 5:
+        if incorrect_format_attempt > 5:
             print("Exceeded max attempts, exiting")
             print("Message log:")
             print(messages)
             exit()
 
-        attempt += 1
+        incorrect_format_attempt += 1
 
         assistant_response = send_messages(messages)
         messages.append(wrap_assistant_message(assistant_response))
@@ -133,7 +137,9 @@ def main():
             messages.append(wrap_user_message(unknown_format_message))
             continue
 
-        # TODO: handle control flow, make sure only one active intro_q
+        # TODO: handle control flow, make sure only one active INTRO
+        # TODO: reset message list when a new requirement is started and pass a concise list of current requirements to save token limit
+
         match parsed_message:
             case {"type": "INTRO", "contents": contents}:
                 if len(requirements) > 0:
@@ -145,7 +151,7 @@ def main():
                 user_response = input(f"{contents}\n")
 
                 messages.append(wrap_user_message(user_response))
-                attempt = 0
+                incorrect_format_attempt = 0
                 continue
 
             case {"type": "FOLLOW_UP", "contents": contents}:
@@ -153,21 +159,38 @@ def main():
                 user_response = input(f"{contents}\n")
 
                 messages.append(wrap_user_message(user_response))
-                attempt = 0
+                incorrect_format_attempt = 0
                 continue
 
             case {"type": "REQUIREMENT_SUMMARY", "contents": contents}:
-                requirements.append(contents)
+                print("Requirement captured:")
+                print(contents)
+                user_response = input("Is this correct? Write exactly 'yes' if it is, otherwise describe what you want improved.\n")
 
+                if user_response != "yes":
+                    messages.append(wrap_user_message(f"User wasn't completely happy with requirement: {user_response}"))
+                    incorrect_format_attempt = 0
+                    continue
+
+
+                requirements.append(contents)
                 messages.append(
                     wrap_user_message("Requirement understood, ask your next question")
                 )
-                attempt = 0
+                incorrect_format_attempt = 0
                 continue
+
+            case {"type": "FINISHED", "contents": contents}:
+                print("Finished collecting requirements")
+                for idx, requirement in enumerate(requirements):
+                    print(f"Requirement {idx + 1}: {requirement}")
+                # TODO continue to next phase
+                exit(0)
 
         # TODO handle this better
         messages.append(wrap_user_message(unknown_format_message))
         continue
+
     # TODO: provide options to return to previous phases if needs be
 
     # TODO: phase 2, establish test cases with the model
