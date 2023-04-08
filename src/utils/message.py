@@ -34,7 +34,7 @@ def send_messages(messages):
         exit()
 
     response = openai.ChatCompletion.create(
-        model=MODEL, messages=messages, temperature=0.1, max_tokens=500
+        model=MODEL, messages=messages, temperature=0.01, max_tokens=500
     )
 
     # TODO: handle cases or more information

@@ -1,4 +1,5 @@
 import json
+import re
 from textwrap import dedent
 from pprint import pprint
 from src.utils.message import (
@@ -9,38 +10,44 @@ from src.utils.message import (
 )
 
 
+def extract_object_from_string(input_string):
+    # Regular expression to match the JSON object
+    pattern = r'{\s*"type"\s*:\s*"(INTRO|FOLLOW_UP|CONSTRAINT_SUMMARY|FINISHED)"\s*,\s*"contents"\s*:\s*"(?:[^"\\]|\\.)*"\s*}'
+    # Search for the pattern in the input string
+    match = re.search(pattern, input_string)
+
+    if match:
+        # Extract the matched JSON object
+        output_json = match.group(0)
+        return output_json
+    else:
+        # No matching JSON object found
+        raise ValueError("No JSON object found in the input string")
+
+
+JSON_FORMAT_DISCLAIMER = "IMPORTANT: It is essential that your entire response contains ONLY a single JSON object exactly matching the format given above, the entire message should be parseable as JSON."
+
 MESSAGE_FORMAT = dedent(
-    """\
-    Anything you output must be a JSON object which matches the following schema, which wraps your message contents within a JSON object so that it is machine parseable:
-    {
-        "type": "object",
-        "properties": {
-            "type": {
-                "enum": ["INTRO", "FOLLOW_UP", "CONSTRAINT_SUMMARY", "FINISHED"]
-            },
-            "contents": {
-                "type": "string"
-            }
-        },
-        "required": ["type", "contents"]
-    }
+    f"""\
+    Anything you output must be wrapped within a JSON object. The JSON object must contain a "type" field, and a "contents" field. The "contents" field should be your output in plain english. The "type" field must be one of the following strings:
 
     - "INTRO" should be used for the initial question about a specific constraint on the input.
     - "FOLLOW_UP" should be used for a response to a user question, or a follow-up question if you do not understand the specific constraint yet.
-    - "CONSTRAINT_SUMMARY" should be used for a summary of the constraint on the input you have discovered. This should be returned when you understand the specific constraint and you're ready to ask the next one. It should NOT repeat information captured in previous constraint.
+    - "CONSTRAINT_SUMMARY" should be used for a summary of _new information_ of the constraint on the input you have discovered. This should be returned when you understand the specific constraint and you're ready to ask the next one, there is no need to repeat previous information.
     - "FINISHED" should be used to indicate that you are finished collecting constraints.
 
     An example of a valid message is:
-    { "type": "INTRO", "contents": "Can the input be empty?" }
 
-    Do not return any other text outside of the JSON object.
+    {{ "type": "INTRO", "contents": "Can the input be empty?" }}
+
+    {JSON_FORMAT_DISCLAIMER}
     """
 )
 
 RESPONSE_INSTRUCTIONS = dedent(
     """\
     Engage in a conversation with the user, try and focus on discovering one constraint on the input at a time, starting with an "INTRO". Respond with "FOLLOW_UP"s until you understand that one constraint. Then send a "CONSTRAINT_SUMMARY".
-    Do NOT ask another question until asked to.
+    You will be asked when it is time to provide a new question, do not add questions about new constraints to the end of another message.
     When you have figured out all of the constraints, send a "FINISHED" message.
     """
 )
@@ -51,46 +58,54 @@ def get_initial_prompt(function_purpose):
         f"""\
         You are a large language model. Answer only in JSON objects which conform to the format described below.
         You are tasked with discovering the constraints of the inputs of a Python function whose purpose is described as:
-        "{function_purpose}"
+        \"""
+        {function_purpose}
+        \"""
 
         You are to ask questions *in a machine-parseable manner* to get a comprehensive description of the possible inputs. 
 
         {MESSAGE_FORMAT}
 
         {RESPONSE_INSTRUCTIONS}
-
-        It is essential that your entire response contains ONLY a single JSON object matching the format given above. Do not write any other text. A machine is parsing your response.
         """
     )
 
 
 def get_interim_prompt(function_purpose, constraints):
-    constraints_str = "\n".join(constraints)
+    constraints_str = "- " + "\n- ".join(
+        [
+            json.dumps({"type": "CONSTRAINT_SUMMARY", "contents": constraint})
+            for constraint in constraints
+        ]
+    )
 
     return dedent(
         f"""\
         You are a large language model. Answer only in JSON objects which conform to the format described below.
+
         You are tasked with discovering the constraints of the inputs of a Python function whose purpose is described as:
-        "{function_purpose}"
+        \"""
+        {function_purpose}
+        \"""
 
         You have already acquired the following constraints:
         {constraints_str}
-
+        
         {MESSAGE_FORMAT}
 
-        Ask a question about a different constraint if there are more unclear aspects, or send a "FINISHED" message if you are done. Do not repeat existing constraints, they have been stored.
-        It is essential that your entire response contains ONLY a single JSON object matching the format given above. Do not write any other text. A machine is parsing your response.
+        If you have no more questions, send a "FINISHED" message.
+
+        IMPORTANT: When you send a "CONSTRAINT_SUMMARY", only output new information that is not already expressed in previous constraints.
+        For example, if you already have a constraint "The input is expected to be a list of floats", and you ask the user if there is a maximum length to that list and they say yes, you should not say "The input is expected to be a list of floats, with a maximum length of 5". Instead, you should say "The maximum length of the list is 5", as the information about it being a list of floats is already captured.
+        
+        You may now ask a question about a NEW constraint, or send a "FINISHED" message if you are done.
         """
     )
 
 
 UNKNOWN_FORMAT_MESSAGE = dedent(
-    f"""\
-    Your response was in an incorrect format. 
-
-    {MESSAGE_FORMAT}
-
-    It is essential that your entire response contains ONLY a single JSON object matching the format given above. Do not write any other text. A machine is parsing your response.
+    """\
+    Your response was not deserializable. Did you add text outside of the JSON object? Try again, ONLY outputting a JSON object.
     """
 )
 
@@ -114,7 +129,7 @@ def run_constraints_phase(function_purpose):
     incorrect_format_attempt = 0
 
     while not phase_1_complete:
-        if incorrect_format_attempt > 3:
+        if incorrect_format_attempt > 2:
             print("Exceeded max attempts, exiting")
             print("Message log:")
             pprint(messages)
@@ -126,14 +141,22 @@ def run_constraints_phase(function_purpose):
         messages.append(wrap_assistant_message(assistant_response))
 
         try:
-            parsed_message = json.loads(assistant_response.strip())
-        except json.JSONDecodeError:
+            obj = extract_object_from_string(assistant_response)
+            parsed_message = json.loads(obj.strip())
+            # we only want to parse the first level as a dict
+            parsed_message = {
+                key: value if not isinstance(value, dict) else json.dumps(value)
+                for key, value in parsed_message.items()
+            }
+        # pylint: disable=bare-except
+        except:
+            # print("Could not parse JSON object from response")
+            # print("Response:")
+            # print(assistant_response)
             messages.append(wrap_user_message(UNKNOWN_FORMAT_MESSAGE))
             continue
 
         # TODO: handle control flow, make sure only one active INTRO
-        # TODO: reset message list when a new constraint is started and pass a concise list of current constraints to save token limit
-
         match parsed_message:
             case {"type": "INTRO", "contents": contents}:
                 if len(constraints) > 0:
@@ -166,7 +189,7 @@ def run_constraints_phase(function_purpose):
                 if user_response != "yes":
                     messages.append(
                         wrap_user_message(
-                            f"Constraint needs modification: {user_response}"
+                            f"Constraint needs modification: {user_response}.\n Remember to respond in the given JSON format."
                         )
                     )
                     incorrect_format_attempt = 0
@@ -177,7 +200,9 @@ def run_constraints_phase(function_purpose):
                     wrap_system_message(
                         get_interim_prompt(function_purpose, constraints)
                     ),
-                    wrap_user_message("Ask your next question"),
+                    wrap_user_message(
+                        "Ask your next question, remember to respond in the given JSON format."
+                    ),
                 ]
 
                 incorrect_format_attempt = 0
