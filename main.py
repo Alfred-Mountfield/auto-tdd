@@ -2,7 +2,7 @@ import os
 import openai
 from dotenv import load_dotenv
 
-from src.phases.requirements import run_requirements_phase
+from src.phases.constraints import run_constraints_phase
 
 
 def setup():
@@ -17,7 +17,7 @@ def main():
         "Describe the purpose of your function, for example, 'Takes a list of numbers and finds their average.'...\n"
     )
 
-    run_requirements_phase(function_purpose)
+    run_constraints_phase(function_purpose)
     # TODO: provide options to return to previous phases if needs be
 
     # TODO: phase 2, establish test cases with the model

@@ -4,9 +4,9 @@ from src.utils.count_tokens import num_tokens_from_messages
 MODEL = "gpt-3.5-turbo"
 
 
-def wrap_user_message(content):
+def wrap_system_message(content):
     return {
-        "role": "user",
+        "role": "system",
         "content": content,
     }
 
@@ -14,6 +14,13 @@ def wrap_user_message(content):
 def wrap_assistant_message(content):
     return {
         "role": "assistant",
+        "content": content,
+    }
+
+
+def wrap_user_message(content):
+    return {
+        "role": "user",
         "content": content,
     }
 
