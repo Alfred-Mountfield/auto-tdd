@@ -2,6 +2,8 @@ import openai
 import os
 from textwrap import dedent
 from dotenv import load_dotenv
+import json
+from pprint import pprint
 
 load_dotenv()
 
@@ -15,9 +17,16 @@ SYSTEM_PROMPT = {
 }
 
 
-def prompt(content):
+def wrap_user_message(content):
     return {
         "role": "user",
+        "content": content,
+    }
+
+    
+def wrap_assistant_message(content):
+    return {
+        "role": "assistant",
         "content": content,
     }
 
@@ -47,6 +56,24 @@ def send_messages(messages):
     # TODO: handle cases or more information
     return response["choices"][0]["message"]["content"]
 
+messages_format = dedent(
+    f"""\
+    You should respond with a single JSON object. Your messages MUST match one of the "format"s outlined in this table:
+    | Option | Description | Format |
+    | 1. Question Introduction | The initial question for a specific requirement | {{ "type": "INTRO", "contents" <MESSAGE CONTENTS> }} |
+    | 2. Follow-up | A response to a user question, or a follow-up question if you do not understand the specific requirement yet. | {{ "type": "FOLLOW_UP": "contents" <MESSAGE CONTENTS> }} |
+    | 3. Requirement summary | A summary of the specific requirement. Should be returned when you understand the specific requirement and you're ready to ask the next one. | {{ "type": "REQUIREMENT_SUMMARY", "contents": <MESSAGE CONTENTS> }} |
+    """
+)
+
+unknown_format_message = dedent(
+    f"""\
+    Your response was in an incorrect format. 
+
+    {messages_format}
+
+    Try again.
+    """)
 
 def main():
     setup()
@@ -63,23 +90,79 @@ def main():
         f"""\
         You are going to write a Python function. It's purpose has been described as:
         "{function_purpose}"
-        Your first task is understand the test space, you are to ask questions to get a comprehensive description of the possible inputs. Ask your first question.
+
+        Your first task is to understand the test space, you are to engage in a conversation with the user and ask questions to get a comprehensive description of the possible inputs. 
+        
+        {messages_format}
+
+        Engage in a conversation with the user, try and focus on one requirement at a time, starting with a Question Introduction. Respond with Follow-Up's until you understand that one requirement. Then send a Requirement Summary.
+        
+         Do NOT ask another question until responding with the Requirement Summary. 
+
+        Ask your first question.
         """
     )
 
-    messages.append(prompt(initial_prompt))
+    messages.append(wrap_user_message(initial_prompt))
+
+    requirements = []
+    attempt = 0
 
     while not phase_1_complete:
-        # TODO: print the current set of constraints for the input space
+        if (attempt > 5):
+            print("Exceeded max attempts, exiting")
+            print("Message log:")
+            print(messages)
+            exit()
+        
+        attempt += 1
 
-        question = send_messages(messages)
+        assistant_response = send_messages(messages)
+        messages.append(wrap_assistant_message(assistant_response))
 
-        # TODO: print the question and ask for a response, or an indication that the user is happy
-        response = input(f"{question}:\n")
+        pprint(messages)
 
-        # TODO: give the model the user's response, ask it if it needs further clarification, otherwise ask another question.
+        try:
+            parsed_message = json.loads(assistant_response.strip())
+        except json.JSONDecodeError as e:
+            messages.append(wrap_user_message(unknown_format_message))
+            continue
 
-        exit()
+
+        # TODO: handle control flow, make sure only one active intro_q
+        match parsed_message:
+            case { "type": "INTRO", "contents": contents}:
+                if len(requirements) > 0:
+                    print("Current requirements")
+                    for idx, requirement in enumerate(requirements):
+                        print(f"Requirement {idx + 1}: {requirement}") 
+
+                # TODO: print the question and programmatically ask for a response, or an indication that the user is happy
+                user_response = input(f"{contents}\n")
+
+                messages.append(wrap_user_message(user_response))
+                attempt = 0
+                continue
+
+            case { "type": "FOLLOW_UP", "contents": contents}:
+                # TODO: print the question and programmatically ask for a response, or an indication that the user is happy
+                user_response = input(f"{contents}\n")
+
+                messages.append(wrap_user_message(user_response))
+                attempt = 0
+                continue
+
+            case { "type": "REQUIREMENT_SUMMARY", "contents": contents}:
+                requirements.append(contents)
+
+                messages.append(wrap_user_message("Requirement understood, ask your next question"))
+                attempt = 0
+                continue
+        
+        # TODO handle this better
+        messages.append(wrap_user_message(unknown_format_message))
+        continue
+    # TODO: provide options to return to previous phases if needs be 
 
     # TODO: phase 2, establish test cases with the model
 
